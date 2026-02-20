@@ -409,14 +409,14 @@ def gateway(
     else:
         console.print("[yellow]Warning: No channels enabled[/yellow]")
     
-    cron_status = cron.status()
-    if cron_status["jobs"] > 0:
-        console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
-    
     console.print(f"[green]✓[/green] Heartbeat: every 30m")
-    
+
     async def run():
         try:
+            cron_status = await cron.status()
+            if cron_status["jobs"] > 0:
+                console.print(f"[green]✓[/green] Cron: {cron_status['jobs']} scheduled jobs")
+
             await cron.start()
             await heartbeat.start()
             await asyncio.gather(
@@ -726,7 +726,7 @@ def cron_list(
     store_path = get_data_dir() / "cron" / "jobs.json"
     service = CronService(store_path)
     
-    jobs = service.list_jobs(include_disabled=all)
+    jobs = asyncio.run(service.list_jobs(include_disabled=all))
     
     if not jobs:
         console.print("No scheduled jobs.")
@@ -806,14 +806,14 @@ def cron_add(
     service = CronService(store_path)
     
     try:
-        job = service.add_job(
+        job = asyncio.run(service.add_job(
             name=name,
             schedule=schedule,
             message=message,
             deliver=deliver,
             to=to,
             channel=channel,
-        )
+        ))
     except ValueError as e:
         console.print(f"[red]Error: {e}[/red]")
         raise typer.Exit(1) from e
@@ -832,7 +832,7 @@ def cron_remove(
     store_path = get_data_dir() / "cron" / "jobs.json"
     service = CronService(store_path)
     
-    if service.remove_job(job_id):
+    if asyncio.run(service.remove_job(job_id)):
         console.print(f"[green]✓[/green] Removed job {job_id}")
     else:
         console.print(f"[red]Job {job_id} not found[/red]")
@@ -850,7 +850,7 @@ def cron_enable(
     store_path = get_data_dir() / "cron" / "jobs.json"
     service = CronService(store_path)
     
-    job = service.enable_job(job_id, enabled=not disable)
+    job = asyncio.run(service.enable_job(job_id, enabled=not disable))
     if job:
         status = "disabled" if disable else "enabled"
         console.print(f"[green]✓[/green] Job '{job.name}' {status}")

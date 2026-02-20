@@ -72,6 +72,7 @@ class CronService:
         self._store: CronStore | None = None
         self._timer_task: asyncio.Task | None = None
         self._running = False
+        self._lock = asyncio.Lock()
     
     def _load_store(self) -> CronStore:
         """Load jobs from disk."""
@@ -218,20 +219,21 @@ class CronService:
     
     async def _on_timer(self) -> None:
         """Handle timer tick - run due jobs."""
-        if not self._store:
-            return
-        
-        now = _now_ms()
-        due_jobs = [
-            j for j in self._store.jobs
-            if j.enabled and j.state.next_run_at_ms and now >= j.state.next_run_at_ms
-        ]
-        
-        for job in due_jobs:
-            await self._execute_job(job)
-        
-        self._save_store()
-        self._arm_timer()
+        async with self._lock:
+            if not self._store:
+                return
+
+            now = _now_ms()
+            due_jobs = [
+                j for j in self._store.jobs
+                if j.enabled and j.state.next_run_at_ms and now >= j.state.next_run_at_ms
+            ]
+
+            for job in due_jobs:
+                await self._execute_job(job)
+
+            self._save_store()
+            self._arm_timer()
     
     async def _execute_job(self, job: CronJob) -> None:
         """Execute a single job."""
@@ -268,13 +270,14 @@ class CronService:
     
     # ========== Public API ==========
     
-    def list_jobs(self, include_disabled: bool = False) -> list[CronJob]:
+    async def list_jobs(self, include_disabled: bool = False) -> list[CronJob]:
         """List all jobs."""
-        store = self._load_store()
-        jobs = store.jobs if include_disabled else [j for j in store.jobs if j.enabled]
-        return sorted(jobs, key=lambda j: j.state.next_run_at_ms or float('inf'))
+        async with self._lock:
+            store = self._load_store()
+            jobs = store.jobs if include_disabled else [j for j in store.jobs if j.enabled]
+            return sorted(jobs, key=lambda j: j.state.next_run_at_ms or float('inf'))
     
-    def add_job(
+    async def add_job(
         self,
         name: str,
         schedule: CronSchedule,
@@ -285,83 +288,88 @@ class CronService:
         delete_after_run: bool = False,
     ) -> CronJob:
         """Add a new job."""
-        store = self._load_store()
-        _validate_schedule_for_add(schedule)
-        now = _now_ms()
-        
-        job = CronJob(
-            id=str(uuid.uuid4())[:8],
-            name=name,
-            enabled=True,
-            schedule=schedule,
-            payload=CronPayload(
-                kind="agent_turn",
-                message=message,
-                deliver=deliver,
-                channel=channel,
-                to=to,
-            ),
-            state=CronJobState(next_run_at_ms=_compute_next_run(schedule, now)),
-            created_at_ms=now,
-            updated_at_ms=now,
-            delete_after_run=delete_after_run,
-        )
-        
-        store.jobs.append(job)
-        self._save_store()
-        self._arm_timer()
-        
-        logger.info("Cron: added job '{}' ({})", name, job.id)
-        return job
-    
-    def remove_job(self, job_id: str) -> bool:
-        """Remove a job by ID."""
-        store = self._load_store()
-        before = len(store.jobs)
-        store.jobs = [j for j in store.jobs if j.id != job_id]
-        removed = len(store.jobs) < before
-        
-        if removed:
+        async with self._lock:
+            store = self._load_store()
+            _validate_schedule_for_add(schedule)
+            now = _now_ms()
+
+            job = CronJob(
+                id=str(uuid.uuid4())[:8],
+                name=name,
+                enabled=True,
+                schedule=schedule,
+                payload=CronPayload(
+                    kind="agent_turn",
+                    message=message,
+                    deliver=deliver,
+                    channel=channel,
+                    to=to,
+                ),
+                state=CronJobState(next_run_at_ms=_compute_next_run(schedule, now)),
+                created_at_ms=now,
+                updated_at_ms=now,
+                delete_after_run=delete_after_run,
+            )
+
+            store.jobs.append(job)
             self._save_store()
             self._arm_timer()
-            logger.info("Cron: removed job {}", job_id)
-        
-        return removed
+
+            logger.info("Cron: added job '{}' ({})", name, job.id)
+            return job
     
-    def enable_job(self, job_id: str, enabled: bool = True) -> CronJob | None:
-        """Enable or disable a job."""
-        store = self._load_store()
-        for job in store.jobs:
-            if job.id == job_id:
-                job.enabled = enabled
-                job.updated_at_ms = _now_ms()
-                if enabled:
-                    job.state.next_run_at_ms = _compute_next_run(job.schedule, _now_ms())
-                else:
-                    job.state.next_run_at_ms = None
+    async def remove_job(self, job_id: str) -> bool:
+        """Remove a job by ID."""
+        async with self._lock:
+            store = self._load_store()
+            before = len(store.jobs)
+            store.jobs = [j for j in store.jobs if j.id != job_id]
+            removed = len(store.jobs) < before
+
+            if removed:
                 self._save_store()
                 self._arm_timer()
-                return job
-        return None
+                logger.info("Cron: removed job {}", job_id)
+
+            return removed
+    
+    async def enable_job(self, job_id: str, enabled: bool = True) -> CronJob | None:
+        """Enable or disable a job."""
+        async with self._lock:
+            store = self._load_store()
+            for job in store.jobs:
+                if job.id == job_id:
+                    job.enabled = enabled
+                    job.updated_at_ms = _now_ms()
+                    if enabled:
+                        job.state.next_run_at_ms = _compute_next_run(job.schedule, _now_ms())
+                    else:
+                        job.state.next_run_at_ms = None
+                    self._save_store()
+                    self._arm_timer()
+                    return job
+            return None
     
     async def run_job(self, job_id: str, force: bool = False) -> bool:
         """Manually run a job."""
-        store = self._load_store()
-        for job in store.jobs:
-            if job.id == job_id:
-                if not force and not job.enabled:
-                    return False
-                await self._execute_job(job)
-                self._save_store()
-                self._arm_timer()
-                return True
-        return False
+        async with self._lock:
+            store = self._load_store()
+            for job in store.jobs:
+                if job.id == job_id:
+                    if not force and not job.enabled:
+                        return False
+                    await self._execute_job(job)
+                    self._save_store()
+                    self._arm_timer()
+                    return True
+            return False
     
-    def status(self) -> dict:
+    async def status(self) -> dict:
         """Get service status."""
-        store = self._load_store()
-        return {
-            "enabled": self._running,
-            "jobs": len(store.jobs),
-            "next_wake_at_ms": self._get_next_wake_ms(),
-        }
+        async with self._lock:
+            store = self._load_store()
+            return {
+                "enabled": self._running,
+                "jobs": len(store.jobs),
+                "next_wake_at_ms": self._get_next_wake_ms(),
+            }
