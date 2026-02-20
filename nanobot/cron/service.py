@@ -219,6 +219,9 @@ class CronService:
     
     async def _on_timer(self) -> None:
         """Handle timer tick - run due jobs."""
+        # Snapshot due jobs under lock, then release before executing.
+        # _execute_job awaits the on_job callback which may re-enter
+        # CronService (e.g. via CronTool), so the lock must not be held.
         async with self._lock:
             if not self._store:
                 return
@@ -229,9 +232,10 @@ class CronService:
                 if j.enabled and j.state.next_run_at_ms and now >= j.state.next_run_at_ms
             ]
 
-            for job in due_jobs:
-                await self._execute_job(job)
+        for job in due_jobs:
+            await self._execute_job(job)
 
+        async with self._lock:
             self._save_store()
             self._arm_timer()
     
@@ -352,17 +356,26 @@ class CronService:
     
     async def run_job(self, job_id: str, force: bool = False) -> bool:
         """Manually run a job."""
+        # Locate job under lock, then release before executing to avoid
+        # deadlock when the on_job callback re-enters CronService.
+        job = None
         async with self._lock:
             store = self._load_store()
-            for job in store.jobs:
-                if job.id == job_id:
-                    if not force and not job.enabled:
+            for j in store.jobs:
+                if j.id == job_id:
+                    if not force and not j.enabled:
                         return False
-                    await self._execute_job(job)
-                    self._save_store()
-                    self._arm_timer()
-                    return True
-            return False
+                    job = j
+                    break
+            if job is None:
+                return False
+
+        await self._execute_job(job)
+
+        async with self._lock:
+            self._save_store()
+            self._arm_timer()
+        return True
     
     async def status(self) -> dict:
         """Get service status."""
