@@ -203,22 +203,27 @@ def _setup_all_provider_envs(config: Config) -> None:
     """Set environment variables for every configured provider.
 
     This is necessary so that fallback models from other providers can
-    authenticate via LiteLLM's env-var resolution.
+    authenticate via LiteLLM's env-var resolution.  Iterates the central
+    registry so newly-added providers are picked up automatically.
     """
     import os
-    from nanobot.providers.registry import find_by_name
+    from nanobot.providers.registry import PROVIDERS
 
-    for spec_name in (
-        "anthropic", "openai", "openrouter", "deepseek", "groq", "zhipu",
-        "dashscope", "gemini", "moonshot", "minimax", "aihubmix",
-        "siliconflow", "volcengine", "vllm",
-    ):
-        p = getattr(config.providers, spec_name, None)
+    for spec in PROVIDERS:
+        if not spec.env_key or spec.is_oauth or spec.is_direct:
+            continue
+        p = getattr(config.providers, spec.name, None)
         if not p or not p.api_key:
             continue
-        spec = find_by_name(spec_name)
-        if spec and spec.env_key:
-            os.environ.setdefault(spec.env_key, p.api_key)
+
+        os.environ.setdefault(spec.env_key, p.api_key)
+
+        # Resolve env_extras (e.g. ZHIPUAI_API_KEY, MOONSHOT_API_BASE)
+        effective_base = getattr(p, "api_base", None) or spec.default_api_base
+        for env_name, env_val in spec.env_extras:
+            resolved = env_val.replace("{api_key}", p.api_key)
+            resolved = resolved.replace("{api_base}", effective_base)
+            os.environ.setdefault(env_name, resolved)
 
 
 def _make_provider(config: Config):

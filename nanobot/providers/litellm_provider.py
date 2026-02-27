@@ -207,39 +207,43 @@ class LiteLLMProvider(LLMProvider):
         original_model = model or self.default_model
         model = self._resolve_model(original_model)
 
+        # Keep originals for fallback retries (cache_control may not be
+        # supported by fallback providers).
+        raw_messages, raw_tools = messages, tools
+
         if self._supports_cache_control(original_model):
             messages, tools = self._apply_cache_control(messages, tools)
 
         # Clamp max_tokens to at least 1 — negative or zero values cause
         # LiteLLM to reject the request with "max_tokens must be at least 1".
         max_tokens = max(1, max_tokens)
-        
+
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": self._sanitize_messages(self._sanitize_empty_content(messages)),
             "max_tokens": max_tokens,
             "temperature": temperature,
         }
-        
+
         # Apply model-specific overrides (e.g. kimi-k2.5 temperature)
         self._apply_model_overrides(model, kwargs)
-        
+
         # Pass api_key directly — more reliable than env vars alone
         if self.api_key:
             kwargs["api_key"] = self.api_key
-        
+
         # Pass api_base for custom endpoints
         if self.api_base:
             kwargs["api_base"] = self.api_base
-        
+
         # Pass extra headers (e.g. APP-Code for AiHubMix)
         if self.extra_headers:
             kwargs["extra_headers"] = self.extra_headers
-        
+
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
-        
+
         try:
             response = await acompletion(**kwargs)
             return self._parse_response(response)
@@ -249,7 +253,9 @@ class LiteLLMProvider(LLMProvider):
                     content=f"Error calling LLM: {str(e)}",
                     finish_reason="error",
                 )
-            return await self._try_fallbacks(e, messages, tools, max_tokens, temperature)
+            return await self._try_fallbacks(
+                e, raw_messages, raw_tools, max_tokens, temperature,
+            )
         except Exception as e:
             # Return error as content for graceful handling
             return LLMResponse(
@@ -265,23 +271,29 @@ class LiteLLMProvider(LLMProvider):
         max_tokens: int,
         temperature: float,
     ) -> LLMResponse:
-        """Try fallback models after a transient error on the primary model."""
-        sanitized = self._sanitize_messages(self._sanitize_empty_content(messages))
+        """Try fallback models after a transient error on the primary model.
 
+        Receives the *raw* (pre-cache_control) messages/tools so that
+        cache_control is only injected when the fallback provider supports it.
+        """
         for fb_model in self._fallbacks:
             resolved = self._resolve_model(fb_model)
             logger.warning("Primary model failed ({}), trying fallback: {}", original_error, fb_model)
 
+            fb_msgs, fb_tools = messages, tools
+            if self._supports_cache_control(fb_model):
+                fb_msgs, fb_tools = self._apply_cache_control(fb_msgs, fb_tools)
+
             fb_kwargs: dict[str, Any] = {
                 "model": resolved,
-                "messages": sanitized,
+                "messages": self._sanitize_messages(self._sanitize_empty_content(fb_msgs)),
                 "max_tokens": max_tokens,
                 "temperature": temperature,
             }
             self._apply_model_overrides(resolved, fb_kwargs)
 
-            if tools:
-                fb_kwargs["tools"] = tools
+            if fb_tools:
+                fb_kwargs["tools"] = fb_tools
                 fb_kwargs["tool_choice"] = "auto"
 
             try:
