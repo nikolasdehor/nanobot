@@ -31,6 +31,8 @@ class TelegramConfig(Base):
     allow_from: list[str] = Field(default_factory=list)  # Allowed user IDs or usernames
     proxy: str | None = None  # HTTP/SOCKS5 proxy URL, e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:1080"
     reply_to_message: bool = False  # If true, bot replies quote the original message
+    group_policy: Literal["open", "mention", "allowlist"] = "mention"  # Group message policy
+    group_allow_from: list[str] = Field(default_factory=list)  # Allowed group chat IDs (for allowlist policy)
 
 
 class FeishuConfig(Base):
