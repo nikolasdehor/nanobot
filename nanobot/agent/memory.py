@@ -74,6 +74,9 @@ class MemoryStore:
         *,
         archive_all: bool = False,
         memory_window: int = 50,
+        temperature: float | None = None,
+        max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> bool:
         """Consolidate old messages into MEMORY.md + HISTORY.md via LLM tool call.
 
@@ -111,6 +114,13 @@ class MemoryStore:
 {chr(10).join(lines)}"""
 
         try:
+            kwargs: dict = {}
+            if temperature is not None:
+                kwargs["temperature"] = temperature
+            if max_tokens is not None:
+                kwargs["max_tokens"] = max_tokens
+            if reasoning_effort is not None:
+                kwargs["reasoning_effort"] = reasoning_effort
             response = await provider.chat(
                 messages=[
                     {"role": "system", "content": "You are a memory consolidation agent. Call the save_memory tool with your consolidation of the conversation."},
@@ -118,6 +128,7 @@ class MemoryStore:
                 ],
                 tools=_SAVE_MEMORY_TOOL,
                 model=model,
+                **kwargs,
             )
 
             if not response.has_tool_calls:
