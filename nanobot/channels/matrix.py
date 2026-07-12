@@ -11,7 +11,7 @@ from pydantic import Field
 
 try:
     import nh3
-    from mistune import create_markdown
+    from mistune import HTMLRenderer, create_markdown
     from nio import (
         AsyncClient,
         AsyncClientConfig,
@@ -60,6 +60,10 @@ MatrixMediaEvent: TypeAlias = RoomMessageMedia | RoomEncryptedMedia
 
 MATRIX_MARKDOWN = create_markdown(
     escape=True,
+    # mistune >=3.3.3 blocks non-standard URL schemes by default (renders "#harmful-link");
+    # mxc:// is Matrix's own content URI scheme and must stay allowed here. The actual
+    # scheme allowlist for outgoing HTML is still enforced downstream by MATRIX_HTML_CLEANER.
+    renderer=HTMLRenderer(escape=True, allow_harmful_protocols=["mxc:"]),
     plugins=["table", "strikethrough", "url", "superscript", "subscript"],
 )
 
