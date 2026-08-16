@@ -126,9 +126,22 @@ jobs:
         working-directory: webui
         run: npm ci --ignore-scripts --dry-run
 
+      # O repo mantem dois lockfiles: o Dependabot atualiza package-lock.json
+      # pelo ecossistema npm e nao sabe mexer em bun.lock, entao toda PR de
+      # dependencia quebrava aqui com "lockfile had changes, but lockfile is
+      # frozen". Em PR de bot o lock e resolvido na hora; nas demais o
+      # --frozen-lockfile continua valendo e barra lock desatualizado.
       - name: Install WebUI dependencies
         working-directory: webui
-        run: bun install --frozen-lockfile
+        env:
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          if [ "$PR_AUTHOR" = "dependabot[bot]" ] || [ "$PR_AUTHOR" = "renovate[bot]" ]; then
+            echo "::notice::Autor $PR_AUTHOR e bot: instalando sem --frozen-lockfile."
+            bun install
+          else
+            bun install --frozen-lockfile
+          fi
 
       - name: Lint WebUI
         working-directory: webui
